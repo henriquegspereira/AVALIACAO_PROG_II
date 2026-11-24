@@ -1,0 +1,13 @@
+{
+    "name": "henrique/biblioteca-orm",
+    "description": "Implementacao de ORM proprio utilizando PHP e PDO",
+    "type": "project",
+    "autoload": {
+        "psr-4": {
+            "BibliotecaORM\\": "src/"
+        }
+    },
+    "require": {
+        "php": "^8.3"
+    }
+}
