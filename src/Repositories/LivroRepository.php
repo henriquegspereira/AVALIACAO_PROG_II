@@ -7,12 +7,13 @@ use InvalidArgumentException;
 
 class LivroRepository extends AbstractRepository
 {
+    
     public function buscar(int $id): ?object
     {
         $registro = $this->buscarUm(
             "SELECT id, titulo, isbn, ano_publicacao
-             FROM livros
-             WHERE id = :id",
+            FROM livros
+            WHERE id = :id",
             ['id' => $id]
         );
 
@@ -20,7 +21,7 @@ class LivroRepository extends AbstractRepository
             return null;
         }
 
-        return Livro::reconstruir(
+        $livro = Livro::reconstruir(
             (int) $registro['id'],
             $registro['titulo'],
             $registro['isbn'],
@@ -28,20 +29,45 @@ class LivroRepository extends AbstractRepository
                 ? (int) $registro['ano_publicacao']
                 : null
         );
+
+        // Recupera os autores associados ao livro.
+        $registrosAutores = $this->buscarTodos(
+            "SELECT a.id, a.nome
+            FROM autores a
+            INNER JOIN livros_autores la
+                ON la.autor_id = a.id
+            WHERE la.livro_id = :livro_id
+            ORDER BY a.nome",
+            ['livro_id' => $id]
+        );
+
+        foreach ($registrosAutores as $registroAutor) {
+            $autor = \BibliotecaORM\Entities\Autor::reconstruir(
+                (int) $registroAutor['id'],
+                $registroAutor['nome']
+            );
+
+            $livro->adicionarAutor($autor);
+        }
+
+        return $livro;
     }
 
+
+    
     public function listar(): array
     {
         $registros = $this->buscarTodos(
             "SELECT id, titulo, isbn, ano_publicacao
-             FROM livros
-             ORDER BY titulo"
+            FROM livros
+            ORDER BY titulo"
         );
 
         $livros = [];
 
+        // Primeiro, reconstruímos todos os livros.
         foreach ($registros as $registro) {
-            $livros[] = Livro::reconstruir(
+            $livro = Livro::reconstruir(
                 (int) $registro['id'],
                 $registro['titulo'],
                 $registro['isbn'],
@@ -49,10 +75,41 @@ class LivroRepository extends AbstractRepository
                     ? (int) $registro['ano_publicacao']
                     : null
             );
+
+            $livros[$livro->getId()] = $livro;
         }
 
-        return $livros;
+        // Depois, recuperamos todos os vínculos em uma única consulta.
+        $registrosAutores = $this->buscarTodos(
+            "SELECT
+                la.livro_id,
+                a.id AS autor_id,
+                a.nome AS autor_nome
+            FROM livros_autores la
+            INNER JOIN autores a
+                ON a.id = la.autor_id
+            ORDER BY a.nome"
+        );
+
+        // Associamos cada autor ao respectivo livro.
+        foreach ($registrosAutores as $registroAutor) {
+            $livroId = (int) $registroAutor['livro_id'];
+
+            if (!isset($livros[$livroId])) {
+                continue;
+            }
+
+            $autor = \BibliotecaORM\Entities\Autor::reconstruir(
+                (int) $registroAutor['autor_id'],
+                $registroAutor['autor_nome']
+            );
+
+            $livros[$livroId]->adicionarAutor($autor);
+        }
+
+        return array_values($livros);
     }
+
 
     public function salvar(object $entidade): object
     {
@@ -116,5 +173,67 @@ class LivroRepository extends AbstractRepository
         );
 
         return $consulta->rowCount() > 0;
+    }
+
+
+    public function salvarComAutores(Livro $livro): Livro
+    {
+        try {
+            $this->conexao->beginTransaction();
+
+            // Primeiro, cadastra o livro.
+            $livroSalvo = $this->salvar($livro);
+
+            
+        // Depois, grava os vínculos com os autores.
+        foreach ($livro->getAutores() as $autor) {
+
+            if ($autor->getId() === null) {
+                throw new InvalidArgumentException(
+                    "Todos os autores precisam estar cadastrados no banco."
+                );
+            }
+
+            // Verifica se o vínculo já existe.
+            $vinculoExistente = $this->buscarUm(
+                "SELECT livro_id
+                FROM livros_autores
+                WHERE livro_id = :livro_id
+                AND autor_id = :autor_id",
+                [
+                    'livro_id' => $livroSalvo->getId(),
+                    'autor_id' => $autor->getId()
+                ]
+            );
+
+            if ($vinculoExistente !== null) {
+                continue;
+            }
+
+            $this->executar(
+                "INSERT INTO livros_autores (livro_id, autor_id)
+                VALUES (:livro_id, :autor_id)",
+                [
+                    'livro_id' => $livroSalvo->getId(),
+                    'autor_id' => $autor->getId()
+                ]
+            );
+
+            $livroSalvo->adicionarAutor($autor);
+        }
+
+
+            $this->conexao->commit();
+
+            return $livroSalvo;
+
+        } catch (\Throwable $erro) {
+
+            if ($this->conexao->inTransaction()) {
+                $this->conexao->rollBack();
+            }
+
+            throw $erro;
+        }
     }
 }
